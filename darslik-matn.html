@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sahifa rasmlarini matnga aylantirish</title>
+<style>
+:root{color-scheme:light dark;--bg:#f4f6f5;--card:#fff;--tx:#17201e;--mut:#5a6764;--ac:#0b7d73;--bd:#d3dbd8;--warn:#a85a00}
+@media (prefers-color-scheme:dark){:root{--bg:#121816;--card:#1a2220;--tx:#eaf0ee;--mut:#98a6a2;--ac:#2fbfb1;--bd:#2f3b38;--warn:#f0a548}}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.55 Georgia,"Times New Roman",serif;background:var(--bg);color:var(--tx)}
+main{max-width:800px;margin:0 auto;padding:16px}
+h1{font-size:1.35rem;margin:.3em 0 .7em}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:14px}
+#drop{border:2px dashed var(--ac);border-radius:10px;padding:24px 12px;text-align:center;cursor:pointer}
+#drop.over{background:rgba(11,125,115,.12)}
+#drop small,#files{color:var(--mut)}
+#files{font-size:.9rem;margin:8px 0;word-break:break-all}
+label.opt{display:flex;gap:10px;align-items:flex-start;margin:8px 0}
+label.opt input{margin-top:.35em}
+button{background:var(--ac);color:#fff;border:0;border-radius:8px;padding:10px 16px;font:inherit;cursor:pointer;margin:6px 6px 0 0}
+button.sec{background:transparent;color:var(--ac);border:1px solid var(--ac)}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,#drop:focus-visible{outline:3px solid var(--ac);outline-offset:2px}
+textarea{width:100%;min-height:420px;font:inherit;line-height:1.6;background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:12px}
+progress{width:100%;margin-top:10px}
+#st{color:var(--mut);font-size:.9rem;min-height:1.4em}
+#warn{color:var(--warn);font-size:.92rem;white-space:pre-line}
+</style>
+</head>
+<body>
+<main>
+<h1>Sahifa rasmlarini matnga aylantirish</h1>
+
+<div class="card">
+  <div id="drop" tabindex="0" role="button">Sahifa rasmlarini shu yerga tashlang yoki bosib tanlang<br><small>Bir nechta rasm bo‘lishi mumkin, ular nomi bo‘yicha tartiblanadi</small></div>
+  <input id="pick" type="file" accept="image/*" multiple hidden>
+  <div id="files"></div>
+
+  <label class="opt"><input type="checkbox" id="oNum" checked><span>Sonlarni so‘z bilan yozish (1942 → ming to‘qqiz yuz qirq ikki)</span></label>
+  <label class="opt"><input type="checkbox" id="oGl" checked><span>Sahifa pastidagi lug‘atni matn ichidagi so‘zi yoniga qo‘yish</span></label>
+  <label class="opt"><input type="checkbox" id="oPg" checked><span>Sahifa raqamini olib tashlash</span></label>
+  <label class="opt"><input type="checkbox" id="oHy" checked><span>Qator oxirida tire bilan bo‘lingan so‘zlarni birlashtirish</span></label>
+
+  <button id="go" disabled>Matnni o‘qish</button>
+  <progress id="bar" value="0" max="1" hidden></progress>
+  <div id="st" role="status"></div>
+</div>
+
+<div class="card" id="res" hidden>
+  <p style="margin-top:0;color:var(--mut)">Natijani shu yerning o‘zida tuzatishingiz mumkin. Variantlarni almashtirsangiz, matn qaytadan tuziladi va qo‘lda kiritgan tuzatishlaringiz o‘chadi.</p>
+  <textarea id="out" spellcheck="false"></textarea>
+  <p id="warn"></p>
+  <button id="cp">Nusxa olish</button><button id="dl" class="sec">.txt yuklab olish</button>
+</div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let files = [], raw = [];
+
+/* ---------- Sonlar → o‘zbekcha so‘z ---------- */
+const ONES = ['', 'bir', 'ikki', 'uch', 'to‘rt', 'besh', 'olti', 'yetti', 'sakkiz', 'to‘qqiz'];
+const TENS = ['', 'o‘n', 'yigirma', 'o‘ttiz', 'qirq', 'ellik', 'oltmish', 'yetmish', 'sakson', 'to‘qson'];
+const SCALE = ['', 'ming', 'million', 'milliard', 'trillion'];
+
+function below1000(n) {
+  const h = Math.floor(n / 100), t = Math.floor(n / 10) % 10, o = n % 10, p = [];
+  if (h) p.push((h > 1 ? ONES[h] + ' ' : '') + 'yuz');
+  if (t) p.push(TENS[t]);
+  if (o) p.push(ONES[o]);
+  return p.join(' ');
+}
+function numWords(s) {
+  s = s.replace(/^0+(?=\d)/, '');
+  if (s.length > 15) return s;
+  if (s === '0') return 'nol';
+  const g = [];
+  for (let i = s.length; i > 0; i -= 3) g.unshift(s.slice(Math.max(0, i - 3), i));
+  const out = [];
+  g.forEach((x, i) => {
+    const n = +x;
+    if (!n) return;
+    const sc = SCALE[g.length - 1 - i];
+    out.push(sc === 'ming' && n === 1 ? 'ming' : below1000(n) + (sc ? ' ' + sc : ''));
+  });
+  return out.join(' ');
+}
+
+/* ---------- Tinish belgilarini tuzatish ---------- */
+function apos(t) {
+  return t
+    .replace(/([oOgG])[‘’'`ʻʼ´]/g, '$1‘')
+    .replace(/(\p{L})[`ʼʻ´'](?=\p{L})/gu, '$1’');
+}
+
+/* ---------- Bitta sahifani qayta ishlash ---------- */
+const FN = /^\s*([¹²³⁴⁵⁶⁷⁸⁹⁰\d]{1,2})\s*([\p{L}‘’][^–—]{1,40}?)\s+[–—-]\s+(.+)$/u;
+const MK = '[¹²³⁴⁵⁶⁷⁸⁹⁰]|\\d';
+const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function joinLines(p, hy) {
+  if (hy) p = p.replace(/([\p{L}‘’])-\n(?=\p{Ll})/gu, '$1');
+  return p.replace(/\n/g, ' ').replace(/ {2,}/g, ' ').trim();
+}
+
+function insertGlossary(text, f) {
+  const note = ' "' + f.term + ' - ' + f.def + '"';
+  const t = f.term;
+  const stems = [t, ...[t.slice(0, -2), t.slice(0, -3)].filter(s => s.length >= 4)];
+  for (const withMark of [true, false]) {
+    for (const s of stems) {
+      const re = new RegExp('(?<![\\p{L}‘’])(' + esc(s) + '[\\p{L}‘’]*)' + (withMark ? '(' + MK + ')' : ''), 'iu');
+      if (re.test(text)) return text.replace(re, (m, w) => w + note);
+    }
+  }
+  return null;
+}
+
+function processPage(text, o, warns, name) {
+  let lines = apos(text.replace(/\r/g, '')).split('\n').map(l => l.trim());
+
+  // lug‘at qatorlari: sahifaning oxirgi qatorlaridan izlanadi
+  const fn = [];
+  if (o.gl) {
+    const filled = [];
+    lines.forEach((l, i) => { if (l) filled.push(i); });
+    filled.slice(-8).forEach(i => {
+      const m = lines[i].match(FN);
+      if (m) { fn.push({ n: m[1], term: m[2].trim(), def: m[3].trim() }); lines[i] = null; }
+    });
+    lines = lines.filter(l => l !== null);
+  }
+
+  // bezak va keraksiz belgilar
+  lines = lines.filter(l => !l || /[\p{L}\d]/u.test(l));
+
+  // sahifa raqami (pastdagi oxirgi 2 qator ichida)
+  if (o.pg) {
+    const n = lines.filter(Boolean).length;
+    let k = -1;
+    lines = lines.filter(l => {
+      if (!l) return true;
+      k++;
+      return !(k >= n - 2 && /^[^\p{L}\d]{0,4}\d{1,4}[^\p{L}\d]{0,4}$/u.test(l));
+    });
+  }
+
+  // abzatslar: bo‘sh qator yoki tire bilan boshlangan qator yangi abzats
+  const paras = [];
+  let cur = [];
+  const flush = () => { if (cur.length) paras.push(joinLines(cur.join('\n'), o.hy)); cur = []; };
+  lines.forEach(l => {
+    if (!l) { flush(); return; }
+    if (/^[–—-]\s/.test(l)) flush();
+    cur.push(l);
+  });
+  flush();
+
+  let body = paras.join('\n\n');
+
+  fn.forEach(f => {
+    const r = insertGlossary(body, f);
+    if (r === null) warns.push(name + ': “' + f.term + '” lug‘ati uchun matndan joy topilmadi');
+    else body = r;
+  });
+
+  // qolib ketgan izoh raqamlari (so‘zga yopishgan)
+  body = body
+    .replace(/(\p{L})[¹²³⁴⁵⁶⁷⁸⁹⁰]+/gu, '$1')
+    .replace(/(?<=\p{L})\d(?=[\s.,;:!?”"“)]|$)/gu, '');
+
+  if (o.num) body = body.replace(/\d+/g, numWords);
+  return body;
+}
+
+function build() {
+  const o = { num: $('oNum').checked, gl: $('oGl').checked, pg: $('oPg').checked, hy: $('oHy').checked };
+  const warns = [];
+  $('out').value = raw.map(r => processPage(r.text, o, warns, r.name)).join('\n\n');
+  $('warn').textContent = warns.join('\n');
+  $('res').hidden = false;
+}
+
+/* ---------- Rasmlarni tanlash ---------- */
+function addFiles(list) {
+  files = [...list].filter(f => f.type.startsWith('image/'))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  $('files').textContent = files.length ? files.length + ' ta rasm: ' + files.map(f => f.name).join(', ') : '';
+  $('go').disabled = !files.length;
+}
+$('drop').onclick = () => $('pick').click();
+$('drop').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('pick').click(); } };
+$('pick').onchange = e => addFiles(e.target.files);
+['dragenter', 'dragover'].forEach(ev => $('drop').addEventListener(ev, e => { e.preventDefault(); $('drop').classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => $('drop').addEventListener(ev, e => { e.preventDefault(); $('drop').classList.remove('over'); }));
+$('drop').addEventListener('drop', e => addFiles(e.dataTransfer.files));
+
+/* ---------- OCR ---------- */
+$('go').onclick = async () => {
+  $('go').disabled = true;
+  $('bar').hidden = false;
+  $('bar').value = 0;
+  raw = [];
+  let cur = 0;
+  try {
+    const worker = await Tesseract.createWorker('uzb', 1, {
+      logger: m => {
+        if (m.status === 'recognizing text') {
+          $('bar').value = (cur + m.progress) / files.length;
+          $('st').textContent = (cur + 1) + '/' + files.length + ' sahifa o‘qilmoqda…';
+        } else {
+          $('st').textContent = 'Tayyorlanmoqda: ' + m.status;
+        }
+      }
+    });
+    for (cur = 0; cur < files.length; cur++) {
+      const { data } = await worker.recognize(files[cur]);
+      raw.push({ name: files[cur].name, text: data.text });
+    }
+    await worker.terminate();
+    $('bar').value = 1;
+    $('st').textContent = 'Tayyor. Matnni tekshirib chiqing.';
+    build();
+  } catch (err) {
+    $('st').textContent = 'Xatolik: ' + (err && err.message ? err.message : err) + '. Internet ulanishini tekshirib, qayta urinib ko‘ring.';
+  }
+  $('go').disabled = false;
+};
+
+['oNum', 'oGl', 'oPg', 'oHy'].forEach(id => $(id).onchange = () => { if (raw.length) build(); });
+
+/* ---------- Nusxa olish va yuklab olish ---------- */
+$('cp').onclick = async () => {
+  try { await navigator.clipboard.writeText($('out').value); }
+  catch (e) { $('out').select(); document.execCommand('copy'); }
+  $('st').textContent = 'Nusxa olindi.';
+};
+$('dl').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([$('out').value], { type: 'text/plain;charset=utf-8' }));
+  a.download = 'matn.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+</script>
+</body>
+</html>
